@@ -75,8 +75,13 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         }
         let movable = panels.iter().all(|p| self.permissions(p).movable);
         let strip = Rect::from_min_max(rect.min, pos2(rect.right(), (rect.top() + self.style.tab_height).min(rect.bottom())));
-        ui.painter().rect_filled(strip, 0.0, self.style.tab_background);
         let floating = matches!(kind, GroupKind::Floating { .. });
+        let host_paints = self.content.paints_tab_row();
+        if host_paints {
+            self.content.paint_tab_strip(ui, strip, floating);
+        } else {
+            ui.painter().rect_filled(strip, 0.0, self.style.tab_background);
+        }
         // Laid out left to right, then mirrored in a right-to-left layout: tabs from the right
         // edge, the header (the host's ≡) at the left.
         let mirror = |r: Rect| {
@@ -103,7 +108,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                     .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, self.style.font.clone())
                     .size()
                     .x
-                    + TAB_PADDING
+                    + self.content.tab_padding()
             })
             .collect();
         let wanted = self.content.group_extra_tabs_width(panels, selected, floating);
@@ -115,12 +120,19 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let owner = TabGroup { panels, selected, minimized, kind, rect };
         let mut x = strip.left();
         let mut shown = Vec::new();
+        let mut painted = Vec::new();
         for (index, width) in &fit.shown {
             let Some(panel) = panels.get(*index) else { continue };
             let tab = mirror(Rect::from_min_size(pos2(x, strip.top()), vec2(*width, strip.height())));
-            self.tab(ui, panel, tab, *index == active, rect, Some(&owner));
+            let (visual_active, hovered, galley) = self.tab(ui, panel, tab, *index == active, rect, Some(&owner));
+            if host_paints {
+                painted.push(crate::docking::TabPaint { panel, rect: tab, active: visual_active, hovered, galley });
+            }
             shown.push((panel.clone(), tab));
             x += width;
+        }
+        if host_paints {
+            self.content.paint_tabs(ui, strip, &painted);
         }
         if !fit.overflow.is_empty() && fit.overflow_width > 0.0 {
             let overflow = mirror(Rect::from_min_size(pos2(x, strip.top()), vec2(fit.overflow_width, strip.height())));
@@ -421,13 +433,18 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     /// the style enables it and the panel is closable. The context menu emits `Action`s, with float,
     /// move and close entries gated by the panel's permissions. `owner: None` removes minimized
     /// semantics and undock latching. An elided label exposes its full text as hover text.
-    pub(super) fn tab(&mut self, ui: &mut Ui, panel: &P, rect: Rect, active: bool, group: Rect, owner: Option<&TabGroup<'_, P>>) {
+    ///
+    /// Returns whether it was drawn active, whether it is hovered, and its laid-out label, for
+    /// hosts that paint tabs themselves ([`DockContent::paints_tab_row`]).
+    pub(super) fn tab(&mut self, ui: &mut Ui, panel: &P, rect: Rect, active: bool, group: Rect, owner: Option<&TabGroup<'_, P>>) -> (bool, bool, Arc<Galley>) {
         let minimized = owner.filter(|owner| self.minimizes(owner)).map(|owner| owner.minimized);
         let policy = self.permissions(panel);
         let label = self.label_of(panel);
         let visual_active = active && !owner.is_some_and(|owner| self.content.group_collapsed(owner.panels));
         let color = if visual_active { self.style.text } else { self.style.inactive_text };
-        let galley = self.tab_label(ui, panel, &label, color, (rect.width() - TAB_PADDING).max(0.0));
+        let padding = self.content.tab_padding();
+        let host_paints = self.content.paints_tab_row();
+        let galley = self.tab_label(ui, panel, &label, color, (rect.width() - padding).max(0.0));
         let elided = galley.elided;
         let tab_id = self.id.with(("tab", panel));
         let pointer_focus = self.pointer_focus(ui, tab_id);
@@ -435,6 +452,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             .sense(if policy.movable { Sense::click_and_drag() } else { Sense::click() })
             .focus_stroke(if pointer_focus { Stroke::NONE } else { Stroke::new(1.0, self.style.accent) })
             .show_at(ui, rect, |ui, response| {
+                if host_paints {
+                    return;
+                }
                 let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
                 painter.rect_filled(
                     rect,
@@ -445,6 +465,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                 painter.galley(at, galley.clone(), color);
             });
         let response = if elided { response.on_hover_text(&label) } else { response };
+        let hovered = response.hovered();
         self.register_interaction(ui.ctx(), response.id);
         if response.is_pointer_button_down_on() || response.clicked_by(egui::PointerButton::Primary) {
             ui.ctx().data_mut(|d| d.insert_temp(tab_id.with("pointer-focus"), true));
@@ -526,6 +547,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                 self.group_menu(ui, owner, panel);
             }
         });
+        (visual_active, hovered, galley)
     }
 }
 

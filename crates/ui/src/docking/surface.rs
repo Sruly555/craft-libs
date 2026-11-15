@@ -1,6 +1,6 @@
-use std::{collections::HashMap, fmt::Debug, hash::Hash};
+use std::{collections::HashMap, fmt::Debug, hash::Hash, sync::Arc};
 
-use egui::{Color32, Context, FontId, Id, Pos2, Rect, Sense, Stroke, Ui, Vec2};
+use egui::{Color32, Context, FontId, Galley, Id, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 use super::{Action, DockError, DropTarget, Layout, Monitor, Permissions, render::Renderer, resize::AnchoredResize};
 
@@ -972,6 +972,35 @@ pub trait DockContent<P> {
     /// overflow of its own. Their widgets take their own input as the header's do, and a press
     /// among them focuses the shown panel. A drop on them adds the panel after the last panel tab.
     fn group_extra_tabs(&mut self, _ui: &mut Ui, _panels: &[P], _active: &P, _floating: bool) {}
+    /// Width a tab gets beyond its label. A host that paints its own tab shapes
+    /// ([`Self::paints_tab_row`]) can ask for the room those shapes need.
+    fn tab_padding(&self) -> f32 {
+        TAB_PADDING
+    }
+    /// True when the host paints group tab rows itself: the strip background through
+    /// [`Self::paint_tab_strip`] and every tab through [`Self::paint_tabs`]. Only the stock
+    /// fills and labels are skipped; activation, dragging, docking, menus and focus stay stock.
+    fn paints_tab_row(&self) -> bool {
+        false
+    }
+    /// Paint a group's tab strip background (before its header and tabs), when
+    /// [`Self::paints_tab_row`] holds.
+    fn paint_tab_strip(&mut self, _ui: &Ui, _strip: Rect, _floating: bool) {}
+    /// Paint a group's shown tabs, after all of them are laid out (so shapes may overlap
+    /// neighbours), when [`Self::paints_tab_row`] holds. `tabs` are in strip order.
+    fn paint_tabs(&mut self, _ui: &Ui, _strip: Rect, _tabs: &[TabPaint<'_, P>]) {}
+}
+
+/// One laid-out tab handed to [`DockContent::paint_tabs`].
+pub struct TabPaint<'a, P> {
+    pub panel: &'a P,
+    /// The tab's hit area within the strip.
+    pub rect: Rect,
+    /// Drawn as the group's active tab.
+    pub active: bool,
+    pub hovered: bool,
+    /// The label, laid out (and cut with "…" if needed) in the stock font and tab colour.
+    pub galley: Arc<Galley>,
 }
 
 /// Host-owned drop resolution request, see [`DockContent::resolve_drag`].
@@ -1091,6 +1120,18 @@ impl<P, C: DockContent<P> + ?Sized> DockContent<P> for Overrides<'_, P, C> {
     }
     fn group_extra_tabs(&mut self, ui: &mut Ui, panels: &[P], active: &P, floating: bool) {
         self.inner.group_extra_tabs(ui, panels, active, floating);
+    }
+    fn tab_padding(&self) -> f32 {
+        self.inner.tab_padding()
+    }
+    fn paints_tab_row(&self) -> bool {
+        self.inner.paints_tab_row()
+    }
+    fn paint_tab_strip(&mut self, ui: &Ui, strip: Rect, floating: bool) {
+        self.inner.paint_tab_strip(ui, strip, floating);
+    }
+    fn paint_tabs(&mut self, ui: &Ui, strip: Rect, tabs: &[TabPaint<'_, P>]) {
+        self.inner.paint_tabs(ui, strip, tabs);
     }
 }
 
