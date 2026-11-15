@@ -585,6 +585,48 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         ]
     }
 
+    /// With [`crate::docking::DockStyle::floating_splits_grow`], where `members` land when dropped
+    /// beside `anchor` in a floating window: the strip the window grows by, past the anchor's
+    /// edge, as big as the moved group (see [`Self::grown_window`]).
+    fn grown_preview(&self, anchor: &P, placement: &Placement<P>, members: &[P]) -> Option<Rect> {
+        let zone = match placement {
+            Placement::Split(zone) | Placement::SplitSized { zone, .. } => *zone,
+            _ => return None,
+        };
+        if !self.style.floating_splits_grow || zone == Zone::Center || !matches!(self.place(anchor), Some(Place::Floating { .. })) {
+            return None;
+        }
+        let now = self.drawn_groups(self.layout);
+        let at = now.iter().find(|(node, _)| holds(node, anchor)).map(|(_, r)| *r)?;
+        let moved = members.first().and_then(|p| now.iter().find(|(node, _)| holds(node, p)).map(|(_, r)| *r)).unwrap_or(at);
+        let gap = self.style.gap;
+        Some(match zone {
+            Zone::Bottom => Rect::from_min_size(pos2(at.left(), at.bottom() + gap), vec2(at.width(), moved.height())),
+            Zone::Top => Rect::from_min_size(pos2(at.left(), at.top() - gap - moved.height()), vec2(at.width(), moved.height())),
+            Zone::Right => Rect::from_min_size(pos2(at.right() + gap, at.top()), vec2(moved.width(), at.height())),
+            Zone::Left => Rect::from_min_size(pos2(at.left() - gap - moved.width(), at.top()), vec2(moved.width(), at.height())),
+            Zone::Center => return None,
+        })
+    }
+
+    /// With [`crate::docking::DockStyle::tab_drag_label`], the dragged panel's tab at the pointer.
+    pub(super) fn paint_tab_ghost(&self, painter: &egui::Painter, panel: &P, pointer: Pos2) {
+        if !self.style.tab_drag_label {
+            return;
+        }
+        let galley = painter.layout_no_wrap(self.label_of(panel), self.style.font.clone(), self.style.text);
+        let size = vec2(galley.size().x + TAB_PADDING, self.style.tab_height.max(galley.size().y + 4.0));
+        let rect = crate::docking::chrome::clamp(Rect::from_min_size(pointer + vec2(6.0, 4.0), size), self.float_bounds);
+        painter.rect(
+            rect,
+            0.0,
+            self.style.floating_background.gamma_multiply(0.92),
+            egui::Stroke::new(1.0, self.style.accent),
+            egui::StrokeKind::Inside,
+        );
+        painter.galley(rect.center() - galley.size() * 0.5, galley, self.style.text);
+    }
+
     /// The group target a single tab drag would take at `pointer`.
     pub(super) fn tab_proposal(&self, panel: &P, pointer: Pos2) -> Option<DropProposal<P>> {
         let action = |to| tab_action(panel, to);
@@ -606,6 +648,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         pointer: Pos2,
     ) {
         let zones = self.paint_tab_zones(painter, &drag.panel, pointer, proposal);
+        self.paint_tab_ghost(painter, &drag.panel, pointer);
         let Some(proposal) = proposal else { return };
         // Reordering inside the source strip shows only the insertion line.
         let same_group = proposal.insertion.is_some()
@@ -641,6 +684,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                 drop_preview(painter, proposal.preview.shrink(1.0), self.style.accent, filled);
             } else if matches!(proposal.placement, Placement::Edge(_)) {
                 self.paint_drop_line(ctx, proposal.preview, true);
+            } else if let Some(rect) = beside.then(|| self.grown_preview(&proposal.anchor, &proposal.placement, members)).flatten() {
+                // A floating window that grows to take the drop: the new part, past its edge.
+                tab_outline(painter, rect.shrink(1.0), self.style.accent);
             } else if beside {
                 let to = Target::At { anchor: proposal.anchor.clone(), placement: proposal.placement.clone() };
                 match self.result_rect(action(to), members) {

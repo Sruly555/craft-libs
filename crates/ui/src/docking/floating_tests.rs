@@ -845,3 +845,53 @@ fn an_in_window_floating_window_fades_only_while_its_title_bar_drag_highlights_a
     d.step(vec![button(strip, false)]);
     assert!(window_of(&d.layout, 8).is_some());
 }
+
+/// The palettes' preview colour.
+const PREVIEW: egui::Color32 = egui::Color32::from_rgb(40, 44, 52);
+
+/// Two palettes: `[1]` at 100,60 (220 x 150) and `[2]` at 450,60 (220 x 120), with floating
+/// splits that grow the window (`floating_splits_grow`) on a group's bottom only.
+fn palettes() -> super::testing::DockDriver<u32, Content> {
+    let layout = Layout {
+        root: None,
+        floating: vec![Floating::single(vec![1], 0, [100.0, 60.0, 220.0, 150.0]), Floating::single(vec![2], 0, [450.0, 60.0, 220.0, 120.0])],
+    };
+    let mut d = super::testing::DockDriver::new(layout, Content::default()).with_style(|s| {
+        s.floating_splits_grow = true;
+        s.new_dock_zones = false;
+        s.group_split_sides = Sides { bottom: true, ..Sides::NONE };
+        s.tab_drag_label = true;
+        s.accent = PREVIEW;
+    });
+    d.native_windows = false;
+    d.settle();
+    d
+}
+
+#[test]
+fn a_tab_held_over_a_growing_palettes_bottom_previews_the_strip_it_grows_by() {
+    let mut d = palettes();
+    let tab = d.hit(&Hit::Tab(2)).expect("tab 2").center();
+    // Near the bottom of window 1's body.
+    let at = pos2(210.0, 200.0);
+    d.hold(tab, at);
+    let accent = PREVIEW;
+    let outlines: Vec<Rect> = d
+        .shapes()
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Rect(r) if r.stroke.width == 2.0 && r.stroke.color == accent => Some(r.rect),
+            _ => None,
+        })
+        .collect();
+    // The preview lies below window 1 (not over its lower half), as tall as window 2's group.
+    assert!(outlines.iter().any(|r| r.top() >= 205.0 && r.height() > 60.0 && r.height() <= 120.0 && r.left() < 110.0), "{outlines:?}");
+    // The dragged tab follows the pointer with its label.
+    assert!(
+        d.shapes().iter().any(|c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text() == "Panel 2" && t.pos.x > at.x)),
+        "no tab ghost at the pointer"
+    );
+    // Released there, the window grows by the moved group.
+    let out = d.release(at);
+    assert!(out.actions.iter().any(|a| matches!(a, Action::MoveFloating { panel: 1, rect } if rect[3] > 150.0)), "{:?}", out.actions);
+}

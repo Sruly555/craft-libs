@@ -169,6 +169,9 @@ pub struct DockStyle {
     /// to hold it, each keeping its height (or width), as palettes docked below one another do.
     /// Off: the group halves, and a drop that leaves too little room joins it as a tab.
     pub floating_splits_grow: bool,
+    /// A tab drag shows the dragged panel's tab, with its label, at the pointer, so it is clear
+    /// what is moving while the preview shows where it will go.
+    pub tab_drag_label: bool,
 }
 
 impl Default for DockStyle {
@@ -257,6 +260,7 @@ impl DockStyle {
             snap_distance: 0.0,
             group_split_sides: super::Sides::ALL,
             floating_splits_grow: false,
+            tab_drag_label: false,
         }
     }
 
