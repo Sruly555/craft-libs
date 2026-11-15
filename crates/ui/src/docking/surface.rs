@@ -157,6 +157,18 @@ pub struct DockStyle {
     pub wheel_selects_tabs: bool,
     /// A middle click on a tab closes its panel when the panel is closable.
     pub middle_click_closes_tabs: bool,
+    /// A floating window moved by its title bar (or a host caption band) snaps its edges to the
+    /// edges of the other floating windows and of the float bounds within this distance, in
+    /// points, as palettes do. 0 (the default) turns snapping off.
+    pub snap_distance: f32,
+    /// The sides of a group that takes tabs where a drop splits it (all four by default). A drop
+    /// on another side joins the group as a tab instead: palettes that dock only below another
+    /// set [`super::Sides`] with `bottom` alone.
+    pub group_split_sides: super::Sides,
+    /// A tab dropped on a side of a group in a floating window docks there and the window grows
+    /// to hold it, each keeping its height (or width), as palettes docked below one another do.
+    /// Off: the group halves, and a drop that leaves too little room joins it as a tab.
+    pub floating_splits_grow: bool,
 }
 
 impl Default for DockStyle {
@@ -242,6 +254,9 @@ impl DockStyle {
             close_button: true,
             wheel_selects_tabs: false,
             middle_click_closes_tabs: false,
+            snap_distance: 0.0,
+            group_split_sides: super::Sides::ALL,
+            floating_splits_grow: false,
         }
     }
 
@@ -989,8 +1004,10 @@ pub trait DockContent<P> {
     /// Paint a group's shown tabs, after all of them are laid out (so shapes may overlap
     /// neighbours), when [`Self::paints_tab_row`] holds. `tabs` are in strip order.
     fn paint_tabs(&mut self, _ui: &Ui, _strip: Rect, _tabs: &[TabPaint<'_, P>]) {}
-    /// Height of a caption band across the top of a group's tab strip. The tabs sit below it,
-    /// and the band (left of the header) drags the group as the strip's empty part does.
+    /// Height of a caption band across the top of a group's tab strip. The tabs sit below it.
+    /// In a floating window the band moves the window live, as a title bar does (snapping with
+    /// [`DockStyle::snap_distance`]) and a double-click minimizes the group; elsewhere it drags
+    /// the group as the strip's empty part does.
     fn tab_strip_caption(&self) -> f32 {
         0.0
     }

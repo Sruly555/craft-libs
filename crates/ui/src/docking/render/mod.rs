@@ -537,6 +537,42 @@ pub(super) fn clamp_float(rect: Rect, screen: Rect) -> Rect {
     crate::docking::chrome::clamp(rect, screen)
 }
 
+/// `moved` with its edges pulled onto the nearest edge within `distance` of `others` (the other
+/// floating windows: only those it overlaps or touches on the other axis) and of `bounds`, one
+/// axis at a time. A `distance` of 0 or less returns `moved` unchanged.
+pub(super) fn snap_rect(moved: Rect, others: &[Rect], bounds: Rect, distance: f32) -> Rect {
+    if !distance.is_finite() || distance <= 0.0 {
+        return moved;
+    }
+    // For one axis: the shift that brings `lo` or `hi` onto a candidate edge, the nearest wins.
+    let best = |lo: f32, hi: f32, edges: &[f32]| -> f32 {
+        let mut shift = 0.0;
+        let mut gap = distance + f32::EPSILON;
+        for &edge in edges {
+            for from in [lo, hi] {
+                let d = edge - from;
+                if d.abs() < gap {
+                    gap = d.abs();
+                    shift = d;
+                }
+            }
+        }
+        shift
+    };
+    let near = |a: egui::Rangef, b: egui::Rangef| a.min <= b.max + distance && b.min <= a.max + distance;
+    let mut xs = vec![bounds.left(), bounds.right()];
+    let mut ys = vec![bounds.top(), bounds.bottom()];
+    for other in others.iter().filter(|r| r.is_finite() && r.is_positive()) {
+        if near(moved.y_range(), other.y_range()) {
+            xs.extend([other.left(), other.right()]);
+        }
+        if near(moved.x_range(), other.x_range()) {
+            ys.extend([other.top(), other.bottom()]);
+        }
+    }
+    moved.translate(egui::vec2(best(moved.left(), moved.right(), &xs), best(moved.top(), moved.bottom(), &ys)))
+}
+
 pub(super) fn split_bounds(available: f32, axis: SplitAxis, first: PanelLimits, second: PanelLimits) -> (f32, f32) {
     let (a_min, a_max, b_min, b_max) = match axis {
         SplitAxis::Horizontal => (first.min.x, first.max.x, second.min.x, second.max.x),
@@ -548,4 +584,28 @@ pub(super) fn split_bounds(available: f32, axis: SplitAxis, first: PanelLimits, 
     let constrained_lo = lo.max(available - b_max);
     let constrained_hi = hi.min(a_max);
     if constrained_lo <= constrained_hi { (constrained_lo, constrained_hi) } else { (lo, hi) }
+}
+
+#[cfg(test)]
+mod snap_tests {
+    use super::snap_rect;
+    use egui::{Rect, pos2, vec2};
+
+    #[test]
+    fn a_moved_window_snaps_to_near_edges_only() {
+        let bounds = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 800.0));
+        let other = Rect::from_min_size(pos2(700.0, 100.0), vec2(200.0, 150.0));
+        let at = |x: f32, y: f32| Rect::from_min_size(pos2(x, y), vec2(200.0, 100.0));
+        // 5 points left of the other window's left edge: its right edge snaps onto it.
+        assert_eq!(snap_rect(at(495.0, 120.0), &[other], bounds, 8.0).min, pos2(500.0, 120.0));
+        // Just under the other window: its top snaps to that window's bottom, its left to its left.
+        assert_eq!(snap_rect(at(703.0, 254.0), &[other], bounds, 8.0).min, pos2(700.0, 250.0));
+        // Near the bounds' corner.
+        assert_eq!(snap_rect(at(6.0, 4.0), &[], bounds, 8.0).min, pos2(0.0, 0.0));
+        // Too far from anything, or snapping off: unchanged.
+        assert_eq!(snap_rect(at(300.0, 300.0), &[other], bounds, 8.0).min, pos2(300.0, 300.0));
+        assert_eq!(snap_rect(at(6.0, 4.0), &[], bounds, 0.0).min, pos2(6.0, 4.0));
+        // A window far below the other one doesn't snap to its left/right edges.
+        assert_eq!(snap_rect(at(503.0, 600.0), &[other], bounds, 8.0).min, pos2(503.0, 600.0));
+    }
 }

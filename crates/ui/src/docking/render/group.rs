@@ -174,7 +174,13 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         // Registered last, so the band wins over the tabs below it.
         let border =
             mirror(Rect::from_min_max(strip.min, pos2(strip.right() - header_width, (strip.top() + BORDER_BAND.max(caption)).min(strip.bottom()))));
-        self.group_handle(ui, "drag-border", border, &owner, movable, !named);
+        match kind {
+            // A host caption over a floating group is its window's title bar.
+            GroupKind::Floating { window } if caption > 0.0 => self.caption_handle(ui, border, panels, selected, minimized, window),
+            _ => {
+                self.group_handle(ui, "drag-border", border, &owner, movable, !named);
+            }
+        }
         if self.style.wheel_selects_tabs {
             let tabs_area = mirror(Rect::from_min_max(strip.min, pos2(strip.right() - header_width, strip.bottom())));
             self.wheel_tabs(ui, tabs_area, extra, panels, active);

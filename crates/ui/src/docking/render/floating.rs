@@ -1,6 +1,6 @@
 use std::{fmt::Debug, hash::Hash};
 
-use egui::{Context, Id, Key, Pos2, Rect, Ui, pos2, vec2};
+use egui::{Context, Id, Key, Pos2, Rect, Sense, Ui, pos2, vec2};
 
 use super::{GroupKind, Renderer, clamp_float, node_limits};
 use crate::docking::chrome::{ChromeStyle, FloatingFrame, RESIZE_BAND, TitleBar};
@@ -109,6 +109,69 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         }
     }
 
+    /// `moved`, the window holding `panel` at its new place, snapped to the other floating
+    /// windows and the float bounds ([`crate::docking::DockStyle::snap_distance`]).
+    pub(super) fn snapped(&self, moved: Rect, panel: &P) -> Rect {
+        if self.style.snap_distance <= 0.0 {
+            return moved;
+        }
+        let others: Vec<Rect> = self
+            .layout
+            .floating
+            .iter()
+            .filter(|w| !w.contains(panel) && !w.minimized)
+            .map(|w| {
+                // Where the window is drawn: its size within its limits, kept in the bounds.
+                let [x, y, width, height] = w.rect;
+                let limits = self.window_limits(w);
+                let size = vec2(width, height).max(limits.min).min(limits.max);
+                crate::docking::chrome::clamp(Rect::from_min_size(pos2(x, y), size), self.float_bounds)
+            })
+            .collect();
+        clamp_float(super::snap_rect(moved, &others, self.float_bounds, self.style.snap_distance), self.float_bounds)
+    }
+
+    /// A host caption band (see [`crate::docking::DockContent::tab_strip_caption`]) over a group
+    /// of the floating window drawn at `window`: a drag moves the window live, as its title bar
+    /// does, and a double-click minimizes the group.
+    pub(super) fn caption_handle(&mut self, ui: &mut Ui, hit: Rect, panels: &[P], selected: &P, minimized: bool, window: Rect) {
+        if !crate::docking::targets::usable(hit) {
+            return;
+        }
+        let Some(floating) = self.layout.floating.iter().find(|w| w.contains(selected)) else { return };
+        let Some(first) = floating.panels().next().cloned() else { return };
+        let movable = floating.panels().all(|p| self.permissions(p).movable);
+        let response = ui.interact(hit, self.id.with(("caption", panels.first())), Sense::click_and_drag());
+        self.register_interaction(ui.ctx(), response.id);
+        if movable && response.drag_started() {
+            let origin = ui.input(|i| i.pointer.press_origin()).or_else(|| ui.ctx().pointer_interact_pos()).unwrap_or(hit.center());
+            let drag = GroupDrag {
+                panel: first.clone(),
+                original: floating.rect,
+                gesture: GroupGesture::Window,
+                members: floating.panels().cloned().collect(),
+                origin,
+                source: window,
+            };
+            ui.ctx().data_mut(|d| d.insert_temp(self.id.with("group-drag"), drag));
+        }
+        if movable
+            && response.dragged()
+            && let Some(drag) = ui.ctx().data(|d| d.get_temp::<GroupDrag<P>>(self.id.with("group-drag")))
+            && drag.gesture == GroupGesture::Window
+            && drag.panel == first
+            && let Some(pointer) = ui.ctx().pointer_interact_pos()
+            && !ui.input(|i| i.key_pressed(Key::Escape))
+            && !crate::focus::lost(ui.ctx())
+        {
+            let moved = self.snapped(clamp_float(drag.source.translate(pointer - drag.origin), self.float_bounds), &first);
+            self.output.actions.push(Action::MoveFloating { panel: first.clone(), rect: [moved.left(), moved.top(), moved.width(), moved.height()] });
+        }
+        if response.double_clicked() {
+            self.output.actions.push(Action::SetMinimized { panel: selected.clone(), minimized: !minimized });
+        }
+    }
+
     /// Opacity of the in-window floating window whose first panel is `first`: faded
     /// ([`super::DRAG_OPACITY`]) while its title bar drag highlights a drop target, as the last
     /// frame drew it ([`super::preview::GROUP_HIGHLIGHTED`]), else opaque. Its tabs and drag
@@ -182,7 +245,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             && !crate::focus::lost(ui.ctx())
         {
             // From the press origin, so fractional pointer steps do not accumulate rounding.
-            let moved = clamp_float(drag.source.translate(pointer - drag.origin), self.float_bounds);
+            let moved = self.snapped(clamp_float(drag.source.translate(pointer - drag.origin), self.float_bounds), first);
             self.output.actions.push(Action::MoveFloating { panel: first.clone(), rect: [moved.left(), moved.top(), moved.width(), moved.height()] });
         }
         if response.bar.double_clicked() {

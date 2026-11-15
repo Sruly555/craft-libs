@@ -214,10 +214,20 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         if !matches!(proposal.placement, Placement::Split(zone) if zone != Zone::Center) {
             return Some(self.settled(proposal, action));
         }
-        if self.leaves_room(action(Target::At { anchor: proposal.anchor.clone(), placement: proposal.placement.clone() })) {
+        // A side the style doesn't split on (`group_split_sides`) joins the group instead.
+        let side_allowed = match proposal.placement {
+            Placement::Split(zone) => self.style.group_split_sides.contains(zone),
+            _ => true,
+        };
+        // A floating window grows to take the docked panel (`floating_splits_grow`).
+        if side_allowed && self.style.floating_splits_grow && matches!(self.place(&proposal.anchor), Some(Place::Floating { .. })) {
             return Some(self.settled(proposal, action));
         }
-        if let Some(placement) = self.sized_split(panel, &proposal, &action)
+        if side_allowed && self.leaves_room(action(Target::At { anchor: proposal.anchor.clone(), placement: proposal.placement.clone() })) {
+            return Some(self.settled(proposal, action));
+        }
+        if side_allowed
+            && let Some(placement) = self.sized_split(panel, &proposal, &action)
             && self.leaves_room(action(Target::At { anchor: proposal.anchor.clone(), placement: placement.clone() }))
         {
             return Some(self.settled(DropProposal { placement, ..proposal }, action));
@@ -529,7 +539,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                 // still applies it via its own command path after body rendering finishes.
                 let mut candidate = self.layout.clone();
                 if candidate.apply_with_permissions(action.clone(), |p| self.permissions(p)).is_ok() {
+                    let grow = self.grown_window(&action, &candidate);
                     self.output.actions.push(action);
+                    self.output.actions.extend(grow);
                     self.output.focused = Some(drag.panel);
                 }
             }
@@ -542,6 +554,35 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         if let (None, Some(rect)) = (&proposal, floating_rect) {
             drop_preview(&painter, rect, self.style.accent, false);
         }
+    }
+
+    /// With [`crate::docking::DockStyle::floating_splits_grow`], the actions that follow a side
+    /// split `action` into a floating window (applied to `after`): the window grows by the moved
+    /// panel's size along the split, and the split gives the anchor its old size, so both keep
+    /// theirs. Empty for any other action.
+    fn grown_window(&self, action: &Action<P>, after: &Layout<P>) -> Vec<Action<P>> {
+        let Action::Move { panel, anchor, placement: Placement::Split(zone) } = action else { return Vec::new() };
+        if !self.style.floating_splits_grow || *zone == Zone::Center || !matches!(self.place(anchor), Some(Place::Floating { .. })) {
+            return Vec::new();
+        }
+        let vertical = matches!(zone, Zone::Top | Zone::Bottom);
+        let along = |r: Rect| if vertical { r.height() } else { r.width() };
+        let now = self.drawn_groups(self.layout);
+        let Some(anchor_size) = now.iter().find(|(node, _)| holds(node, anchor)).map(|(_, r)| along(*r)) else { return Vec::new() };
+        let moved_size = now.iter().find(|(node, _)| holds(node, panel)).map_or(anchor_size, |(_, r)| along(*r));
+        let Some(crate::docking::dock_model::Place::Floating { window, path }) = after.place(anchor) else { return Vec::new() };
+        let Some((_, split_path)) = path.split_last() else { return Vec::new() };
+        let Some(floating) = after.floating.get(window) else { return Vec::new() };
+        let [x, y, w, h] = floating.rect;
+        let gap = self.style.gap;
+        let rect = if vertical { [x, y, w, h + moved_size + gap] } else { [x, y, w + moved_size + gap, h] };
+        // The anchor is the split's first child for a bottom (right) drop, its second otherwise.
+        let first = matches!(zone, Zone::Bottom | Zone::Right);
+        let size = if first { SplitSize::FixedFirst(anchor_size) } else { SplitSize::FixedSecond(anchor_size) };
+        vec![
+            Action::MoveFloating { panel: anchor.clone(), rect },
+            Action::ResizeWindowSplit { panel: anchor.clone(), path: split_path.to_vec(), size },
+        ]
     }
 
     /// The group target a single tab drag would take at `pointer`.
