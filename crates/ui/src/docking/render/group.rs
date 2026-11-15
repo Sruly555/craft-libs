@@ -77,6 +77,13 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let strip = Rect::from_min_max(rect.min, pos2(rect.right(), (rect.top() + self.style.tab_height).min(rect.bottom())));
         let floating = matches!(kind, GroupKind::Floating { .. });
         let host_paints = self.content.paints_tab_row();
+        // A host caption band across the strip's top: the tabs sit below it, the band drags.
+        let caption = {
+            let c = self.content.tab_strip_caption();
+            if c.is_finite() { c.clamp(0.0, strip.height()) } else { 0.0 }
+        };
+        let tab_top = strip.top() + caption;
+        let tab_height = strip.height() - caption;
         if host_paints {
             self.content.paint_tab_strip(ui, strip, floating);
         } else {
@@ -123,7 +130,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let mut painted = Vec::new();
         for (index, width) in &fit.shown {
             let Some(panel) = panels.get(*index) else { continue };
-            let tab = mirror(Rect::from_min_size(pos2(x, strip.top()), vec2(*width, strip.height())));
+            let tab = mirror(Rect::from_min_size(pos2(x, tab_top), vec2(*width, tab_height)));
             let (visual_active, hovered, galley) = self.tab(ui, panel, tab, *index == active, rect, Some(&owner));
             if host_paints {
                 painted.push(crate::docking::TabPaint { panel, rect: tab, active: visual_active, hovered, galley });
@@ -135,7 +142,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             self.content.paint_tabs(ui, strip, &painted);
         }
         if !fit.overflow.is_empty() && fit.overflow_width > 0.0 {
-            let overflow = mirror(Rect::from_min_size(pos2(x, strip.top()), vec2(fit.overflow_width, strip.height())));
+            let overflow = mirror(Rect::from_min_size(pos2(x, tab_top), vec2(fit.overflow_width, tab_height)));
             let response = ui.interact(overflow, self.id.with(("overflow", selected)), Sense::click());
             self.register_interaction(ui.ctx(), response.id);
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &self.style.panels_label));
@@ -157,7 +164,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         }
         let mut extra = Rect::NOTHING;
         if extra_width > 0.0 {
-            extra = mirror(Rect::from_min_size(pos2(x, strip.top()), vec2(extra_width, strip.height())));
+            extra = mirror(Rect::from_min_size(pos2(x, tab_top), vec2(extra_width, tab_height)));
             self.host_area(ui, "extra-tabs", extra, selected, |content, ui| content.group_extra_tabs(ui, panels, selected, floating));
             x += extra_width;
         }
@@ -165,7 +172,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             mirror(Rect::from_min_max(pos2(x.min(strip.right() - header_width), strip.top()), pos2(strip.right() - header_width, strip.bottom())));
         let named = self.group_handle(ui, "drag-bar", bar, &owner, movable, true);
         // Registered last, so the band wins over the tabs below it.
-        let border = mirror(Rect::from_min_max(strip.min, pos2(strip.right() - header_width, (strip.top() + BORDER_BAND).min(strip.bottom()))));
+        let border =
+            mirror(Rect::from_min_max(strip.min, pos2(strip.right() - header_width, (strip.top() + BORDER_BAND.max(caption)).min(strip.bottom()))));
         self.group_handle(ui, "drag-border", border, &owner, movable, !named);
         if self.style.wheel_selects_tabs {
             let tabs_area = mirror(Rect::from_min_max(strip.min, pos2(strip.right() - header_width, strip.bottom())));
@@ -436,7 +444,15 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     ///
     /// Returns whether it was drawn active, whether it is hovered, and its laid-out label, for
     /// hosts that paint tabs themselves ([`DockContent::paints_tab_row`]).
-    pub(super) fn tab(&mut self, ui: &mut Ui, panel: &P, rect: Rect, active: bool, group: Rect, owner: Option<&TabGroup<'_, P>>) -> (bool, bool, Arc<Galley>) {
+    pub(super) fn tab(
+        &mut self,
+        ui: &mut Ui,
+        panel: &P,
+        rect: Rect,
+        active: bool,
+        group: Rect,
+        owner: Option<&TabGroup<'_, P>>,
+    ) -> (bool, bool, Arc<Galley>) {
         let minimized = owner.filter(|owner| self.minimizes(owner)).map(|owner| owner.minimized);
         let policy = self.permissions(panel);
         let label = self.label_of(panel);

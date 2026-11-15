@@ -989,6 +989,11 @@ pub trait DockContent<P> {
     /// Paint a group's shown tabs, after all of them are laid out (so shapes may overlap
     /// neighbours), when [`Self::paints_tab_row`] holds. `tabs` are in strip order.
     fn paint_tabs(&mut self, _ui: &Ui, _strip: Rect, _tabs: &[TabPaint<'_, P>]) {}
+    /// Height of a caption band across the top of a group's tab strip. The tabs sit below it,
+    /// and the band (left of the header) drags the group as the strip's empty part does.
+    fn tab_strip_caption(&self) -> f32 {
+        0.0
+    }
 }
 
 /// One laid-out tab handed to [`DockContent::paint_tabs`].
@@ -1132,6 +1137,9 @@ impl<P, C: DockContent<P> + ?Sized> DockContent<P> for Overrides<'_, P, C> {
     }
     fn paint_tabs(&mut self, ui: &Ui, strip: Rect, tabs: &[TabPaint<'_, P>]) {
         self.inner.paint_tabs(ui, strip, tabs);
+    }
+    fn tab_strip_caption(&self) -> f32 {
+        self.inner.tab_strip_caption()
     }
 }
 
